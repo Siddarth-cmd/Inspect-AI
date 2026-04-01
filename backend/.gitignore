@@ -1,0 +1,20 @@
+# Python
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+
+# Secrets — NEVER commit these
+.env
+serviceAccountKey.json
+
+# Local database — not needed in cloud (Firestore is used instead)
+inspections.db
+local_db.json
+
+# OS
+.DS_Store
+Thumbs.db

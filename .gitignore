@@ -1,0 +1,30 @@
+# Node
+node_modules/
+frontend/node_modules/
+frontend/dist/
+frontend/.env.local
+frontend/.env.production.local
+
+# Python
+backend/venv/
+backend/__pycache__/
+backend/*.pyc
+
+# Secrets — NEVER commit
+backend/.env
+backend/serviceAccountKey.json
+backend/inspections.db
+backend/local_db.json
+
+# Android build outputs (large files, not needed in repo)
+frontend/android/app/build/
+frontend/android/.gradle/
+frontend/android/build/
+
+# Capacitor
+frontend/android/local.properties
+
+# OS
+.DS_Store
+Thumbs.db
+*.log
