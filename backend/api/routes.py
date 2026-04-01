@@ -1,4 +1,4 @@
-from fastapi import APIRouter, UploadFile, File, Depends, HTTPException, Header
+from fastapi import APIRouter, UploadFile, File, Depends, HTTPException, Header, Form
 from services.ai_service import analyze_image, analyze_video
 from services.db_service import save_inspection, get_user_history, verify_token, save_user_profile, get_user_profile
 from pydantic import BaseModel
@@ -23,7 +23,7 @@ def get_current_user(authorization: str = Header(None)):
     return "local_guest"
 
 @router.post("/predict")
-async def predict(file: UploadFile = File(...), user_id: str = Depends(get_current_user)):
+async def predict(file: UploadFile = File(...), mode: str = Form("surface"), user_id: str = Depends(get_current_user)):
     try:
         contents = await file.read()
         if not contents:
@@ -33,14 +33,14 @@ async def predict(file: UploadFile = File(...), user_id: str = Depends(get_curre
         mime = content_type.lower()
         is_video = mime.startswith("video/")
 
-        print(f"📷 Analyzing: {file.filename} (Type: {mime}) for user: {user_id}")
+        print(f"📷 Analyzing: {file.filename} (Type: {mime}, Mode: {mode}) for user: {user_id}")
         
         if is_video:
-            detection_results = analyze_video(contents, mime_type=mime)
+            detection_results = analyze_video(contents, mime_type=mime, mode=mode)
             # Cannot store binary video payload inside firebase/sqlite history easily
             img_data = None 
         else:
-            detection_results = analyze_image(contents)
+            detection_results = analyze_image(contents, mode=mode)
             img_data = "data:image/jpeg;base64," + base64.b64encode(contents).decode("utf-8")
 
         if "error" in detection_results:
@@ -48,6 +48,7 @@ async def predict(file: UploadFile = File(...), user_id: str = Depends(get_curre
 
         record = {
             "filename": file.filename,
+            "mode": mode,
             "defects": detection_results.get("defects", []),
             "quality_score": detection_results.get("quality_score", 100),
             "date": datetime.datetime.now().isoformat(),

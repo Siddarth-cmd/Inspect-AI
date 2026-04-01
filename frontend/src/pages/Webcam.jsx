@@ -12,7 +12,7 @@ const SEV_BG = {
   Medium: 'bg-amber-50 dark:bg-amber-500/10 border-amber-200 dark:border-amber-500/30',
   Low: 'bg-emerald-50 dark:bg-emerald-500/10 border-emerald-200 dark:border-emerald-500/30',
 };
-const DEFECT_EMOJI = { crack: '💥', scratch: '✂️', dent: '🔧' };
+const DEFECT_EMOJI = { crack: '💥', scratch: '✂️', dent: '🔧', burn: '🔥', missing_component: '🛑', corrosion: '💧' };
 const REC_STYLE = {
   Pass: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-400',
   Review: 'bg-amber-100 text-amber-700 dark:bg-amber-500/20 dark:text-amber-400',
@@ -27,6 +27,7 @@ export default function Webcam() {
   const [streaming, setStreaming] = useState(false);
   const [recording, setRecording] = useState(false);
   const [timeLeft, setTimeLeft] = useState(0);
+  const [mode, setMode] = useState('surface');
   
   const [captured, setCaptured] = useState(null);  // img base64
   const [capturedBlob, setCapturedBlob] = useState(null); // img blob
@@ -127,6 +128,7 @@ export default function Webcam() {
     setLoading(true); setError(null);
     try {
       const formData = new FormData();
+      formData.append('mode', mode);
       if (capturedVideoBlob) {
         formData.append('file', capturedVideoBlob, 'webcam_capture.webm');
       } else {
@@ -156,9 +158,15 @@ export default function Webcam() {
 
   return (
     <div className="p-6 space-y-6 animate-fade-in-up">
-      <div>
-        <h1 className="text-3xl font-black text-slate-800 dark:text-white">📸 Live Camera Inspection</h1>
-        <p className="text-slate-500 dark:text-slate-400 mt-1 text-sm">Capture a live image from your webcam and detect defects instantly</p>
+      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+        <div>
+          <h1 className="text-3xl font-black text-slate-800 dark:text-white">📸 Live Camera Inspection</h1>
+          <p className="text-slate-500 dark:text-slate-400 mt-1 text-sm">Capture a live image from your webcam and detect defects instantly</p>
+        </div>
+        <div className="flex bg-slate-100 dark:bg-slate-800 p-1 rounded-xl border border-slate-200 dark:border-slate-700">
+          <button onClick={() => setMode('surface')} className={`px-4 py-2 text-sm font-bold rounded-lg transition-all ${mode === 'surface' ? 'bg-white dark:bg-slate-700 text-slate-800 dark:text-white shadow' : 'text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'}`}>Surface</button>
+          <button onClick={() => setMode('internal')} className={`px-4 py-2 text-sm font-bold rounded-lg transition-all ${mode === 'internal' ? 'bg-white dark:bg-slate-700 text-slate-800 dark:text-white shadow' : 'text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'}`}>Internal</button>
+        </div>
       </div>
 
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
@@ -166,7 +174,33 @@ export default function Webcam() {
         <div className={`${CARD} p-6 space-y-5`}>
           <div className="relative w-full bg-slate-900 dark:bg-black rounded-2xl overflow-hidden aspect-video flex items-center justify-center">
             <video ref={videoRef} className={`w-full h-full object-cover ${streaming && !recording ? 'block' : recording ? 'block' : 'hidden'}`} playsInline muted />
-            {captured && !capturedVideo && <img src={captured} alt="Captured" className="w-full h-full object-cover" />}
+            
+            {captured && !capturedVideo && (
+              <div className="relative w-full h-full">
+                <img src={captured} alt="Captured" className="w-full h-full object-cover" />
+                {results?.defects?.map((d, i) => {
+                  const [ymin, xmin, ymax, xmax] = d.bbox || [0, 0, 0, 0];
+                  if (ymin === 0 && xmin === 0 && ymax === 0 && xmax === 0) return null;
+                  
+                  // Clamp to prevent out-of-bounds rendering
+                  const clamp = (val) => Math.max(0, Math.min(1, val));
+                  const t = clamp(ymin) * 100;
+                  const l = clamp(xmin) * 100;
+                  const height = (clamp(ymax) - clamp(ymin)) * 100;
+                  const width = (clamp(xmax) - clamp(xmin)) * 100;
+
+                  return (
+                    <div key={i} className="absolute border-[3px] border-red-500 bg-red-500/20 pointer-events-none" 
+                         style={{ top: `${t}%`, left: `${l}%`, width: `${width}%`, height: `${height}%` }}>
+                      <span className="absolute -top-[22px] -left-[3px] bg-red-500 text-white text-[10px] uppercase font-black px-1.5 py-0.5 rounded-t-sm whitespace-nowrap tracking-wide shadow-md">
+                        {d.type} {Math.round(d.confidence * 100)}%
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+            
             {capturedVideo && <video src={capturedVideo} controls autoPlay loop playsInline className="w-full h-full object-cover" />}
             
             {!streaming && !captured && !capturedVideo && (
@@ -288,7 +322,7 @@ export default function Webcam() {
             {/* Defects */}
             <div className="space-y-2">
               <h3 className="text-xs font-bold uppercase tracking-widest text-slate-500 dark:text-slate-400">
-                ⚠️ Detected Defects ({results.defects?.length || 0})
+                {mode === 'internal' ? '⚠️ Internal Component Report' : `⚠️ Detected Defects (${results.defects?.length || 0})`}
               </h3>
               {results.defects?.length > 0 ? results.defects.map((d, i) => (
                 <div key={i} className={`px-4 py-3 rounded-xl border ${SEV_BG[d.severity] || 'bg-slate-50 dark:bg-slate-700 border-slate-200 dark:border-slate-600'}`}>
@@ -300,16 +334,26 @@ export default function Webcam() {
                     </div>
                     <span className="text-sm font-bold text-slate-500 dark:text-slate-400">{Math.round((d.confidence||0)*100)}%</span>
                   </div>
-                  {d.explanation && <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed mt-1">{d.explanation}</p>}
-                  {d.cause && <p className="text-xs text-amber-600 dark:text-amber-400 mt-1"><span className="font-semibold">⚡ Cause:</span> {d.cause}</p>}
-                  {d.solution && <p className="text-xs text-emerald-600 dark:text-emerald-400 mt-1"><span className="font-semibold">✓ Solution:</span> {d.solution}</p>}
+                  
+                  {mode === 'internal' ? (
+                     <div className="mt-2 space-y-1">
+                        <p className="text-xs text-slate-600 dark:text-slate-300"><span className="font-bold text-slate-800 dark:text-slate-100">Affected Area:</span> {(d.explanation.split(' - ')[0]) || 'Component Core'}</p>
+                        <p className="text-xs text-slate-500 dark:text-slate-400"><span className="font-semibold">Explanation:</span> {d.explanation.split(' - ')[1] || d.explanation}</p>
+                     </div>
+                  ) : (
+                     <div className="mt-2 space-y-1">
+                        {d.explanation && <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">{d.explanation}</p>}
+                        {d.cause && <p className="text-xs text-amber-600 dark:text-amber-400"><span className="font-semibold">⚡ Cause:</span> {d.cause}</p>}
+                     </div>
+                  )}
+                  {d.solution && <p className="text-xs text-emerald-600 dark:text-emerald-400 mt-2"><span className="font-semibold">✅ Solution:</span> {d.solution}</p>}
                 </div>
               )) : (
                 <div className="flex items-center gap-3 p-4 bg-emerald-50 dark:bg-emerald-500/10 border border-emerald-200 dark:border-emerald-500/30 rounded-xl">
                   <span className="text-3xl">🎉</span>
                   <div>
-                    <p className="font-semibold text-emerald-700 dark:text-emerald-400">No defects found!</p>
-                    <p className="text-xs text-slate-500 dark:text-slate-400">Product passes quality inspection.</p>
+                    <p className="font-semibold text-emerald-700 dark:text-emerald-400">{mode === 'internal' ? 'Component Healthy!' : 'No defects found!'}</p>
+                    <p className="text-xs text-slate-500 dark:text-slate-400">{mode === 'internal' ? 'No internal functional damage detected.' : 'Product passes quality inspection.'}</p>
                   </div>
                 </div>
               )}

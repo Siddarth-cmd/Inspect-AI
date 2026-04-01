@@ -56,6 +56,31 @@ Rules:
 - Every defect MUST have all 7 fields including bbox
 """
 
+INTERNAL_PROMPT = """You are an expert internal hardware diagnostics AI engineer.
+Analyze this image of an internal electronic component (CPU, PCB, motherboards, circuit boards) and detect visible damage such as: 
+burnt areas, broken components, missing parts, corrosion, or cracks in circuits.
+
+You MUST respond with ONLY a valid JSON object. No markdown, no code fences, no explanatory text — raw JSON only.
+
+Use this EXACT schema (no extra keys, no missing keys):
+{
+  "damage_detected": <boolean>,
+  "damage_type": "<burn|crack|missing_component|corrosion|none>",
+  "affected_area": "<short description of where the damage is>",
+  "confidence": <float 0.0-1.0>,
+  "severity": "<Low|Medium|High>",
+  "recommendation": "<repair|replace|ok>",
+  "explanation": "<short reason for the decision>",
+  "bbox": [<ymin float>, <xmin float>, <ymax float>, <xmax float>]
+}
+
+Rules:
+- You must ONLY detect visible internal damage from images. Do NOT claim detection of hidden internal faults.
+- bbox: normalized coords (0.0-1.0), [ymin, xmin, ymax, xmax], top-left=(0,0) bottom-right=(1,1). Set to [0,0,0,0] if no damage.
+- If no damage is found, set damage_detected=false, damage_type="none", recommendation="ok".
+"""
+
+
 # ─── JSON Extraction ─────────────────────────────────────────────────────────
 
 def _extract_json(text: str) -> dict:
@@ -147,9 +172,47 @@ def _normalise(result: dict) -> dict:
 
     return result
 
+def _normalise_internal(result: dict) -> dict:
+    detected = result.get("damage_detected", False)
+    dtype = str(result.get("damage_type", "none")).lower()
+    severity = str(result.get("severity", "Low")).capitalize()
+    conf = float(result.get("confidence", 0.0))
+    conf = max(0.0, min(1.0, conf))
+    
+    bbox = result.get("bbox", [0.0, 0.0, 0.0, 0.0])
+    if not isinstance(bbox, list) or len(bbox) != 4:
+        bbox = [0.0, 0.0, 0.0, 0.0]
+    bbox = [max(0.0, min(1.0, float(v))) for v in bbox]
+
+    score = 100
+    if detected and dtype != "none":
+        sev = severity.lower()
+        if sev == "high": score = 25
+        elif sev == "medium": score = 55
+        else: score = 80
+    
+    # Map to standard format so history and core rendering doesn't crash completely,
+    # but keep the original keys for the specialized internal UI
+    defect = {
+        "type": dtype,
+        "confidence": round(conf, 3),
+        "severity": severity,
+        "explanation": f"{result.get('affected_area', 'Unknown area')} - {result.get('explanation', '')}",
+        "cause": "Internal Fault",
+        "solution": str(result.get("recommendation", "ok")).capitalize(),
+        "bbox": bbox
+    }
+    
+    result["defects"] = [defect] if detected and dtype != "none" else []
+    result["quality_score"] = score
+    result["defect_detected"] = detected
+    result["recommendation"] = "Reject" if score < 60 else "Review" if score < 90 else "Pass"
+    
+    return result
+
 # ─── Main Entry Point ─────────────────────────────────────────────────────────
 
-def analyze_image(image_bytes: bytes) -> dict:
+def analyze_image(image_bytes: bytes, mode: str = "surface") -> dict:
     if not client:
         return {"error": "GEMINI_API_KEY is not set in .env"}
 
@@ -180,15 +243,20 @@ def analyze_image(image_bytes: bytes) -> dict:
     for attempt in range(1, MAX_RETRIES + 1):
         try:
             print(f"[Gemini] Attempt {attempt}/{MAX_RETRIES} — sending to {MODEL_NAME}...")
+            prompt_to_use = INTERNAL_PROMPT if mode == "internal" else PROMPT
             response = client.models.generate_content(
                 model=MODEL_NAME,
-                contents=[PROMPT, image_part],
+                contents=[prompt_to_use, image_part],
                 config=config,
             )
             raw = response.text
             print(f"[Gemini] Response received ({len(raw)} chars)")
             result = _extract_json(raw)
-            result = _normalise(result)
+            # Route normalisation based on mode
+            if mode == "internal":
+                result = _normalise_internal(result)
+            else:
+                result = _normalise(result)
             print(f"[Gemini] OK — score={result['quality_score']}, "
                   f"defects={len(result['defects'])}, verdict={result['recommendation']}")
             return result
@@ -201,7 +269,7 @@ def analyze_image(image_bytes: bytes) -> dict:
 
     return {"error": f"Gemini API failed after {MAX_RETRIES} attempts: {last_error}"}
 
-def analyze_video(video_bytes: bytes, mime_type: str = "video/mp4") -> dict:
+def analyze_video(video_bytes: bytes, mime_type: str = "video/mp4", mode: str = "surface") -> dict:
     if not client:
         return {"error": "GEMINI_API_KEY is not set in .env"}
 
@@ -245,17 +313,22 @@ def analyze_video(video_bytes: bytes, mime_type: str = "video/mp4") -> dict:
         )
 
         for attempt in range(1, MAX_RETRIES + 1):
+            prompt_to_use = INTERNAL_PROMPT if mode == "internal" else PROMPT
             try:
                 print(f"[Gemini] Attempt {attempt}/{MAX_RETRIES} — analyzing video...")
                 response = client.models.generate_content(
                     model=MODEL_NAME,
-                    contents=[PROMPT, uploaded_file],
+                    contents=[prompt_to_use, uploaded_file],
                     config=config,
                 )
                 raw = response.text
                 print(f"[Gemini] Video Response received ({len(raw)} chars)")
                 result = _extract_json(raw)
-                result = _normalise(result)
+                
+                if mode == "internal":
+                    result = _normalise_internal(result)
+                else:
+                    result = _normalise(result)
                 print(f"[Gemini] Video OK — score={result['quality_score']}, defects={len(result['defects'])}, verdict={result['recommendation']}")
                 return result
 
