@@ -1,4 +1,7 @@
 import jsPDF from 'jspdf';
+import { Filesystem, Directory } from '@capacitor/filesystem';
+import { Share } from '@capacitor/share';
+import { Capacitor } from '@capacitor/core';
 
 /**
  * Draw bounding boxes on a canvas copy of the image and return base64 JPEG.
@@ -247,5 +250,33 @@ export async function downloadReport(results, imageUrl, filename = 'image.jpg') 
     doc.text(`InspectAI - AI Defect Detection System  |  Page ${p} of ${pageCount}`, M, 290);
   }
 
-  doc.save(`InspectAI_Report_${Date.now()}.pdf`);
+  const pdfFilename = `InspectAI_Report_${Date.now()}.pdf`;
+
+  if (Capacitor.isNativePlatform()) {
+    try {
+      // Extract pure base64 PDF bytes ignoring the URI header
+      const base64pdf = doc.output('datauristring').split(',')[1];
+      
+      const savedFile = await Filesystem.writeFile({
+        path: pdfFilename,
+        data: base64pdf,
+        directory: Directory.Cache
+      });
+
+      await Share.share({
+        title: pdfFilename,
+        text: 'Attached is the InspectAI Defect Detection Report.',
+        url: savedFile.uri,
+        dialogTitle: 'Save or Share Report'
+      });
+      
+    } catch (err) {
+      console.error('Android Native PDF Save Error:', err);
+      // Failsafe web fallback just in case
+      doc.save(pdfFilename);
+    }
+  } else {
+    // Standard Desktop / Web output
+    doc.save(pdfFilename);
+  }
 }

@@ -3,6 +3,7 @@ import re
 import json
 import time
 import io
+import tempfile
 from PIL import Image
 from google import genai
 from google.genai import types
@@ -199,3 +200,85 @@ def analyze_image(image_bytes: bytes) -> dict:
                 time.sleep(1.5 * attempt)
 
     return {"error": f"Gemini API failed after {MAX_RETRIES} attempts: {last_error}"}
+
+def analyze_video(video_bytes: bytes, mime_type: str = "video/mp4") -> dict:
+    if not client:
+        return {"error": "GEMINI_API_KEY is not set in .env"}
+
+    # Gemini requires videos to be uploaded via the File API for processing
+    last_error = None
+    tmp_path = None
+    uploaded_file = None
+    try:
+        # 1. Write video bytes to a temporary file
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".webm") as tf:
+            tf.write(video_bytes)
+            tmp_path = tf.name
+
+        print(f"[Gemini] Uploading {len(video_bytes)} bytes of video to Google File API...")
+        # 2. Upload to Gemini
+        uploaded_file = client.files.upload(file=tmp_path)
+        print(f"[Gemini] Upload complete. File ID: {uploaded_file.name}. Polling processing status...")
+
+        # 3. Wait for video processing
+        # Videos require async processing on Google's end before analysis can start
+        max_polls = 15
+        polls = 0
+        while uploaded_file.state.name == "PROCESSING" and polls < max_polls:
+            print("[Gemini] ...still processing video...")
+            time.sleep(2)
+            uploaded_file = client.files.get(name=uploaded_file.name)
+            polls += 1
+
+        if uploaded_file.state.name != "ACTIVE":
+            if uploaded_file.state.name == "FAILED":
+                return {"error": "Google Servers failed to process this video file."}
+            return {"error": "Video processing timed out on Google servers."}
+
+        # 4. Analyze generating JSON
+        config = types.GenerateContentConfig(
+            temperature=0.1,
+            top_p=0.95,
+            top_k=40,
+            max_output_tokens=4096,
+            response_mime_type="application/json",
+        )
+
+        for attempt in range(1, MAX_RETRIES + 1):
+            try:
+                print(f"[Gemini] Attempt {attempt}/{MAX_RETRIES} — analyzing video...")
+                response = client.models.generate_content(
+                    model=MODEL_NAME,
+                    contents=[PROMPT, uploaded_file],
+                    config=config,
+                )
+                raw = response.text
+                print(f"[Gemini] Video Response received ({len(raw)} chars)")
+                result = _extract_json(raw)
+                result = _normalise(result)
+                print(f"[Gemini] Video OK — score={result['quality_score']}, defects={len(result['defects'])}, verdict={result['recommendation']}")
+                return result
+
+            except Exception as e:
+                last_error = str(e)
+                print(f"[Gemini] Attempt {attempt} failed: {e}")
+                if attempt < MAX_RETRIES:
+                    time.sleep(1.5 * attempt)
+
+        return {"error": f"Gemini API failed after {MAX_RETRIES} attempts: {last_error}"}
+
+    except Exception as e:
+        print(f"[Gemini] Video upload/processing failed: {e}")
+        return {"error": f"Failed to process video: {str(e)}"}
+    
+    finally:
+        # 5. CLEANUP to prevent memory leaks and ghost charges
+        if uploaded_file:
+            try:
+                client.files.delete(name=uploaded_file.name)
+                print(f"[Gemini] Cleaned up video file from root server: {uploaded_file.name}")
+            except Exception as cleanup_err:
+                print(f"[Gemini WARNING] Failed to delete remote file: {cleanup_err}")
+        if tmp_path and os.path.exists(tmp_path):
+            os.remove(tmp_path)
+            print(f"[Gemini] Cleaned up local temporary video chunk.")

@@ -25,8 +25,18 @@ export default function Webcam() {
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
   const [streaming, setStreaming] = useState(false);
-  const [captured, setCaptured] = useState(null);  // base64 data URL
-  const [capturedBlob, setCapturedBlob] = useState(null);
+  const [recording, setRecording] = useState(false);
+  const [timeLeft, setTimeLeft] = useState(0);
+  
+  const [captured, setCaptured] = useState(null);  // img base64
+  const [capturedBlob, setCapturedBlob] = useState(null); // img blob
+  
+  const [capturedVideo, setCapturedVideo] = useState(null); // video url
+  const [capturedVideoBlob, setCapturedVideoBlob] = useState(null); // video blob
+
+  const mediaRecorderRef = useRef(null);
+  const recordedChunksRef = useRef([]);
+
   const [loading, setLoading] = useState(false);
   const [results, setResults] = useState(null);
   const [error, setError] = useState(null);
@@ -34,7 +44,7 @@ export default function Webcam() {
 
   const startCamera = async () => {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 1280, height: 720 } });
+      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment", width: { ideal: 1280 }, height: { ideal: 720 } } });
       videoRef.current.srcObject = stream;
       videoRef.current.play();
       setStreaming(true);
@@ -63,12 +73,65 @@ export default function Webcam() {
     stopCamera();
   }, []);
 
+  const startVideoRecord = () => {
+    if (!videoRef.current?.srcObject) return;
+    recordedChunksRef.current = [];
+    const stream = videoRef.current.srcObject;
+    try {
+      const mediaRecorder = new MediaRecorder(stream, { mimeType: 'video/webm;codecs=vp8,opus' });
+      mediaRecorderRef.current = mediaRecorder;
+      mediaRecorder.ondataavailable = (e) => {
+        if (e.data.size > 0) recordedChunksRef.current.push(e.data);
+      };
+      mediaRecorder.onstop = () => {
+        const blob = new Blob(recordedChunksRef.current, { type: 'video/webm' });
+        const url = URL.createObjectURL(blob);
+        setCapturedVideoBlob(blob);
+        setCapturedVideo(url);
+        stopCamera();
+      };
+      
+      mediaRecorder.start();
+      setRecording(true);
+      setTimeLeft(5);
+      
+      // Auto-stop countdown (Hardcap prevents file bloat)
+      let currentTicks = 5;
+      const interval = setInterval(() => {
+        currentTicks--;
+        setTimeLeft(currentTicks);
+        if (currentTicks <= 0) {
+          clearInterval(interval);
+          if (mediaRecorderRef.current?.state === 'recording') {
+            mediaRecorderRef.current.stop();
+            setRecording(false);
+          }
+        }
+      }, 1000);
+      
+    } catch (err) {
+      console.error(err);
+      setError('Video recording is not supported on this browser/device.');
+    }
+  };
+
+  const resetCapture = () => {
+    setCaptured(null); setCapturedBlob(null);
+    setCapturedVideo(null); setCapturedVideoBlob(null);
+    setResults(null);
+    startCamera();
+  };
+
   const analyzeCapture = async () => {
-    if (!capturedBlob) return;
+    if (!capturedBlob && !capturedVideoBlob) return;
     setLoading(true); setError(null);
     try {
       const formData = new FormData();
-      formData.append('file', capturedBlob, 'webcam_capture.jpg');
+      if (capturedVideoBlob) {
+        formData.append('file', capturedVideoBlob, 'webcam_capture.webm');
+      } else {
+        formData.append('file', capturedBlob, 'webcam_capture.jpg');
+      }
       const token = await getToken();
       const res = await axios.post(`${API_BASE}/predict`, formData, {
         headers: { 'Content-Type': 'multipart/form-data', 'Authorization': `Bearer ${token}` }
@@ -102,17 +165,25 @@ export default function Webcam() {
         {/* Camera Feed */}
         <div className={`${CARD} p-6 space-y-5`}>
           <div className="relative w-full bg-slate-900 dark:bg-black rounded-2xl overflow-hidden aspect-video flex items-center justify-center">
-            <video ref={videoRef} className={`w-full h-full object-cover ${streaming ? 'block' : 'hidden'}`} playsInline muted />
-            {captured && <img src={captured} alt="Captured" className="w-full h-full object-cover" />}
-            {!streaming && !captured && (
+            <video ref={videoRef} className={`w-full h-full object-cover ${streaming && !recording ? 'block' : recording ? 'block' : 'hidden'}`} playsInline muted />
+            {captured && !capturedVideo && <img src={captured} alt="Captured" className="w-full h-full object-cover" />}
+            {capturedVideo && <video src={capturedVideo} controls autoPlay loop playsInline className="w-full h-full object-cover" />}
+            
+            {!streaming && !captured && !capturedVideo && (
               <div className="text-center">
                 <div className="text-6xl mb-3">📷</div>
                 <p className="text-slate-400 text-sm font-medium">Camera is off</p>
               </div>
             )}
-            {streaming && (
-              <div className="absolute top-3 right-3 flex items-center gap-1.5 bg-red-500 text-white text-xs font-bold px-2.5 py-1 rounded-full">
+            
+            {streaming && !recording && (
+              <div className="absolute top-3 right-3 flex items-center gap-1.5 bg-indigo-500 text-white text-xs font-bold px-2.5 py-1 rounded-full">
                 <span className="w-2 h-2 rounded-full bg-white animate-pulse"/>LIVE
+              </div>
+            )}
+            {recording && (
+              <div className="absolute top-3 right-3 flex items-center gap-1.5 bg-red-600 text-white text-xs font-bold px-3 py-1.5 rounded-full shadow-lg">
+                <span className="w-2.5 h-2.5 rounded-full bg-white animate-ping"/>REC {timeLeft}s
               </div>
             )}
           </div>
@@ -120,25 +191,34 @@ export default function Webcam() {
           <canvas ref={canvasRef} className="hidden" />
 
           <div className="flex gap-3">
-            {!streaming && !captured && (
+            {!streaming && !captured && !capturedVideo && (
               <button onClick={startCamera}
                 className="flex-1 py-3 bg-gradient-to-r from-indigo-500 to-purple-600 text-white rounded-xl font-semibold hover:from-indigo-600 hover:to-purple-700 transition-all shadow-lg flex items-center justify-center gap-2">
                 📷 Start Camera
               </button>
             )}
-            {streaming && (
+            {streaming && !recording && (
               <>
                 <button onClick={captureFrame}
                   className="flex-1 py-3 bg-gradient-to-r from-indigo-500 to-purple-600 text-white rounded-xl font-semibold hover:from-indigo-600 hover:to-purple-700 transition-all shadow-lg flex items-center justify-center gap-2">
-                  📸 Capture Frame
+                  📸 Photo
+                </button>
+                <button onClick={startVideoRecord}
+                  className="flex-1 py-3 bg-gradient-to-r from-rose-500 to-red-600 text-white rounded-xl font-semibold hover:from-rose-600 hover:to-red-700 transition-all shadow-lg flex items-center justify-center gap-2">
+                  📹 Scan 5s Video
                 </button>
                 <button onClick={stopCamera}
                   className="px-5 py-3 bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300 rounded-xl font-medium hover:bg-slate-200 dark:hover:bg-slate-600 border border-slate-200 dark:border-slate-600 transition-all">
-                  ✕ Stop
+                  ✕
                 </button>
               </>
             )}
-            {captured && !results && (
+            {recording && (
+               <div className="flex-1 py-3 bg-red-100 dark:bg-red-500/20 text-red-600 dark:text-red-400 rounded-xl font-bold flex items-center justify-center gap-2 border border-red-200 dark:border-red-500/30">
+                 Recording active... Please pan object slowly.
+               </div>
+            )}
+            {(captured || capturedVideo) && !results && (
               <>
                 <button onClick={analyzeCapture} disabled={loading}
                   className="flex-1 py-3 bg-gradient-to-r from-indigo-500 to-purple-600 text-white rounded-xl font-semibold hover:from-indigo-600 hover:to-purple-700 transition-all shadow-lg disabled:opacity-50 flex items-center justify-center gap-2">
@@ -152,14 +232,14 @@ export default function Webcam() {
                     </>
                   ) : '🚀 Analyze Frame'}
                 </button>
-                <button onClick={() => { setCaptured(null); setCapturedBlob(null); setResults(null); startCamera(); }}
+                <button onClick={resetCapture}
                   className="px-5 py-3 bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300 rounded-xl font-medium border border-slate-200 dark:border-slate-600 transition-all hover:bg-slate-200 dark:hover:bg-slate-600">
                   🔄 Retake
                 </button>
               </>
             )}
             {results && (
-              <button onClick={() => { setCaptured(null); setCapturedBlob(null); setResults(null); }}
+              <button onClick={resetCapture}
                 className="flex-1 py-3 bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300 rounded-xl font-medium border border-slate-200 dark:border-slate-600 transition-all hover:bg-slate-200 dark:hover:bg-slate-600">
                 🔄 New Capture
               </button>

@@ -1,5 +1,5 @@
 from fastapi import APIRouter, UploadFile, File, Depends, HTTPException, Header
-from services.ai_service import analyze_image
+from services.ai_service import analyze_image, analyze_video
 from services.db_service import save_inspection, get_user_history, verify_token, save_user_profile, get_user_profile
 from pydantic import BaseModel
 import datetime
@@ -29,8 +29,19 @@ async def predict(file: UploadFile = File(...), user_id: str = Depends(get_curre
         if not contents:
             raise HTTPException(status_code=400, detail="Empty file")
 
-        print(f"📷 Analyzing: {file.filename} for user: {user_id}")
-        detection_results = analyze_image(contents)
+        content_type = file.content_type or ""
+        mime = content_type.lower()
+        is_video = mime.startswith("video/")
+
+        print(f"📷 Analyzing: {file.filename} (Type: {mime}) for user: {user_id}")
+        
+        if is_video:
+            detection_results = analyze_video(contents, mime_type=mime)
+            # Cannot store binary video payload inside firebase/sqlite history easily
+            img_data = None 
+        else:
+            detection_results = analyze_image(contents)
+            img_data = "data:image/jpeg;base64," + base64.b64encode(contents).decode("utf-8")
 
         if "error" in detection_results:
             raise HTTPException(status_code=500, detail=detection_results["error"])
@@ -41,7 +52,7 @@ async def predict(file: UploadFile = File(...), user_id: str = Depends(get_curre
             "quality_score": detection_results.get("quality_score", 100),
             "date": datetime.datetime.now().isoformat(),
             # Store image as base64 data URL so it can be embedded in History PDFs
-            "image_data": "data:image/jpeg;base64," + base64.b64encode(contents).decode("utf-8"),
+            "image_data": img_data,
         }
 
         doc_id = save_inspection(user_id, record)
